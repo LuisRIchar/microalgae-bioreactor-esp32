@@ -58,15 +58,19 @@ void logica_tira_led(void* pv){
         if(lux < 3000.0f){
             ledc_set_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0,3072);
             ledc_update_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0);
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }else if(lux<12000){
             ledc_set_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0,2048);
             ledc_update_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0);   
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }else if (lux <30000){
             ledc_set_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0,1024);
             ledc_update_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0);
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }else{
             ledc_set_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0,100);
             ledc_update_duty(LEDC_LOW_SPEED_MODE,LEDC_CHANNEL_0);
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }
 
         vTaskDelay(pdMS_TO_TICKS(300));

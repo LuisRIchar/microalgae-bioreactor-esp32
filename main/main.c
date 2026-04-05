@@ -29,11 +29,13 @@
 #include "ds18b20_temp.h"
 #include "calentador_relay.h"
 #include "tira_led_roja.h"
+#include "cliente_mqtt.h"
 
 void app_main(void){
 
     Init_gestor_datos();
     i2c_bus_init(11, 12);  
+    Init_cliente_mqtt("SSID","PASSWORD","MQTT_URL");
 
     Init_pantalla(11,12,5);
     Init_sensor_luz(11,12);

@@ -1,8 +1,0 @@
-Command: ninja all
-[1/9] Performing build step for 'bootloader'
-[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Personal\Codes\Code\C\esp-idf\EmbeddedSystemsRobotin\proyecto_micro_algas\build\bootloader\esp-idf\esptool_py && C:\Users\luisd\.espressif\python_env\idf5.5_py3.13_env\Scripts\python.exe C:/espressif/esp-idf-v5.5.3/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 C:/Personal/Codes/Code/C/esp-idf/EmbeddedSystemsRobotin/proyecto_micro_algas/build/bootloader/bootloader.bin"
-Bootloader binary size 0x5160 bytes. 0x2ea0 bytes (36%) free.
-[2/9] No install step for 'bootloader'
-[3/9] Completed 'bootloader'
-[4/9] Building C object esp-idf/actuadores/CMakeFiles/__idf_actuadores.dir/u8g2_esp32_hal.c.obj
-[5/9] Linking C static library esp-idf\actuadores\libactuadores.a

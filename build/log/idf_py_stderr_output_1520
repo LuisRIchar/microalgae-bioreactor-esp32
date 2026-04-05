@@ -1,6 +1,0 @@
-Command: C:\Users\luisd\.espressif\python_env\idf5.5_py3.13_env\Scripts\python.exe C:\espressif\esp-idf-v5.5.3\tools/idf_monitor.py -p COM4 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 C:\Personal\Codes\Code\C\esp-idf\EmbeddedSystemsRobotin\proyecto_micro_algas\build\proyecto_micro_algas.elf C:\Personal\Codes\Code\C\esp-idf\EmbeddedSystemsRobotin\proyecto_micro_algas\build\bootloader\bootloader.elf --force-color -m 'C:\Users\luisd\.espressif\python_env\idf5.5_py3.13_env\Scripts\python.exe' 'C:\espressif\esp-idf-v5.5.3\tools\idf.py'
-[0;33m--- Warning: GDB cannot open serial ports accessed as COMx[0m
-[0;33m--- Using \\.\COM4 instead...[0m
-[0;33m--- esp-idf-monitor 1.9.0 on \\.\COM4 115200[0m
-[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
-[0m
