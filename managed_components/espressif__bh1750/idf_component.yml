@@ -1,9 +1,0 @@
-dependencies:
-  idf: '>=5.3'
-description: I2C driver for BH1750 light sensor
-repository: git://github.com/espressif/esp-bsp.git
-repository_info:
-  commit_sha: 49fc375124185625f574e4f781c33c07628411c1
-  path: components/bh1750
-url: https://github.com/espressif/esp-bsp/tree/master/components/bh1750
-version: 2.0.0
