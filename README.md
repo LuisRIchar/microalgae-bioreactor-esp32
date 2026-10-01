@@ -1,288 +1,171 @@
-# Biorreactor de Microalgas — ESP32-S3
+| Supported Targets | ESP32-S3 |
+| ----------------- | -------- |
 
-Firmware para un biorreactor de microalgas basado en **ESP32-S3** y **FreeRTOS (ESP-IDF)**. El sistema monitorea en tiempo real las variables críticas de cultivo (temperatura, luz y turbidez), controla de forma automática un calentador y una tira LED de iluminación, muestra los datos en una pantalla OLED y los publica por **MQTT** para su supervisión remota.
+# Microalgae Bioreactor
 
-> Proyecto académico de la materia **Sistemas Embebidos** — Facultad de Ingeniería, UAEMex.
+[English](README.md) | [Español](README.es.md)
 
----
+ESP-IDF firmware for a small microalgae bioreactor built around an ESP32-S3. It reads water temperature (DS18B20), incident light (BH1750) and turbidity (analog sensor), keeps the culture warm with a relay-driven heater, tops up the light with a red LED strip, shows the readings on a 128×64 OLED and publishes them over MQTT every 30 seconds.
 
-## Tabla de contenidos
+The goal is to grow algae and keep them in good condition so they can later be used as fuel or for other applications. The bioreactor does this by monitoring the variables that matter most for growth and acting on two of them, temperature and light. Turbidity is tracked as a proxy for biomass.
 
-1. [Objetivo](#objetivo)
-2. [Características](#características)
-3. [Arquitectura](#arquitectura)
-4. [Hardware](#hardware)
-5. [Estructura del repositorio](#estructura-del-repositorio)
-6. [Descripción de los módulos](#descripción-de-los-módulos)
-7. [Compilación y flasheo](#compilación-y-flasheo)
-8. [Configuración de red y MQTT](#configuración-de-red-y-mqtt)
-9. [Formato de datos MQTT](#formato-de-datos-mqtt)
-10. [Trabajo futuro](#trabajo-futuro)
-11. [Autores](#autores)
-12. [Licencia](#licencia)
+<p align="center">
+  <img src="docs/IMG_4777.png" width="420" alt="Glass tank seen from above, lit by the red LED strip, with the turbidity probe and DS18B20 temperature probe hanging into the water">
+  <img src="docs/IMG_4778.png" width="420" alt="Front view of the tank on its wooden stand, red LED strip running along the base">
+</p>
 
----
+This started as the final project for the Embedded Systems course at the Facultad de Ingeniería, UAEMex.
 
-## Objetivo
+## How it works
 
-Las microalgas tienen aplicaciones en biocombustibles, alimentación y tratamiento de agua, pero su crecimiento depende de mantener condiciones estables. Este biorreactor busca **automatizar el cuidado del cultivo**:
-
-- **Temperatura** dentro de un rango óptimo, mediante un calentador controlado por relé.
-- **Iluminación** suficiente, compensando la luz ambiental con una tira LED roja regulada por PWM.
-- **Turbidez** monitoreada como indicador indirecto de la densidad (crecimiento) del cultivo.
-
-## Características
-
-- Arquitectura multitarea con **FreeRTOS**: cada sensor y actuador corre en su propia tarea, repartidas entre los dos núcleos del ESP32-S3.
-- **Gestor de datos centralizado** con acceso protegido por *mutex* para evitar condiciones de carrera entre tareas.
-- **Bus I²C compartido**: un único bus maestro para la pantalla OLED y el sensor de luz BH1750.
-- **Control de temperatura con histéresis** y tiempo mínimo entre conmutaciones para proteger el relé.
-- **Iluminación adaptativa**: el ciclo de trabajo PWM de la tira LED se ajusta según la luz medida.
-- **Interfaz OLED** con tres pantallas (turbidez, luz y temperatura), navegables con un botón por **interrupción** + semáforo binario con antirrebote.
-- **Telemetría MQTT** sobre Wi-Fi con reconexión automática.
-
-## Arquitectura
+Each sensor and actuator runs in its own FreeRTOS task. Sensors never talk to actuators directly: they write their latest value into a small data manager (`componentes/gestor/gestor_datos.c`), one mutex per variable, and every consumer reads from there.
 
 ```mermaid
 flowchart LR
-    subgraph Sensores
-        T[DS18B20<br/>temperatura]
-        L[BH1750<br/>luz]
-        U[Sensor de turbidez<br/>ADC]
-    end
-
-    G[(Gestor de datos<br/>mutex por variable)]
-
-    subgraph Actuadores
-        R[Relé<br/>calentador]
-        LED[Tira LED roja<br/>PWM]
-        O[Pantalla OLED<br/>SH1106]
-    end
-
-    M[Cliente MQTT<br/>Wi-Fi]
-    B((Botón<br/>ISR))
-
-    T -- set_temp --> G
-    L -- set_lux --> G
-    U -- set_turbidez --> G
-    G -- get_temp --> R
-    G -- get_lux --> LED
-    G -- get_* --> O
-    G -- get_* --> M
-    B -- semáforo --> O
+    T[DS18B20] -- set_temp --> G[(gestor_datos)]
+    L[BH1750] -- set_lux --> G
+    U[Turbidity ADC] -- set_turbidez --> G
+    G -- get_temp --> R[Heater relay]
+    G -- get_lux --> LED[LED strip PWM]
+    G --> O[OLED]
+    G --> M[MQTT client]
+    B((Button ISR)) -- semaphore --> O
 ```
 
-Los sensores **escriben** en el gestor de datos y los actuadores **leen** de él; ningún módulo se comunica directamente con otro. Así cada componente queda desacoplado y es fácil agregar sensores o consumidores nuevos.
+| Task              | Source                | Core | Priority | Period |
+|-------------------|-----------------------|:----:|:--------:|--------|
+| `Temperatura`     | `DS18B20_temp.c`      | 1    | 2        | 300 ms |
+| `sensor_luz`      | `bh1750_luz.c`        | 0    | 2        | 500 ms |
+| `sensor_turbidez` | `turbidez.c`          | 1    | 2        | 500 ms |
+| `relay`           | `calentador_relay.c`  | 1    | 3        | 500 ms |
+| `led`             | `tira_led_roja.c`     | 1    | 3        | ~3.3 s |
+| `oled_pantalla`   | `pantalla_oled.c`     | 1    | 1        | 200 ms |
+| `mqtt_cleinte`    | `cliente_mqtt.c`      | 0    | 3        | 30 s   |
 
-### Tareas de FreeRTOS
+**Heater.** On/off control with hysteresis: the relay turns on at 23.5 °C or below and off at 24.5 °C or above, with at least 30 s between switches so the relay is not chattering. The relay module is active-low and starts off.
 
-| Tarea              | Módulo              | Núcleo | Prioridad | Periodo   |
-|--------------------|---------------------|:------:|:---------:|-----------|
-| `Temperatura`      | `DS18B20_temp.c`    | 1      | 2         | 300 ms    |
-| `sensor_luz`       | `bh1750_luz.c`      | 0      | 2         | 500 ms    |
-| `sensor_turbidez`  | `turbidez.c`        | 1      | 2         | 500 ms    |
-| `relay`            | `calentador_relay.c`| 1      | 3         | 500 ms    |
-| `led`              | `tira_led_roja.c`   | 1      | 3         | ~3.3 s    |
-| `oled_pantalla`    | `pantalla_oled.c`   | 1      | 1         | 200 ms    |
-| `mqtt_cleinte`     | `cliente_mqtt.c`    | 0      | 3         | 30 s      |
+**Light.** The LED strip is driven by LEDC at 5 kHz, 12-bit. The less ambient light the BH1750 sees, the brighter the strip:
 
-## Hardware
+| Measured light     | Duty (of 4095) |
+|--------------------|:--------------:|
+| < 3 000 lx         | 3072 (75 %)    |
+| 3 000 – 12 000 lx  | 2048 (50 %)    |
+| 12 000 – 30 000 lx | 1024 (25 %)    |
+| > 30 000 lx        | 100 (~2 %)     |
 
-### Componentes
-
-| Componente                 | Función                          | Interfaz     |
-|----------------------------|----------------------------------|--------------|
-| ESP32-S3                   | Microcontrolador principal       | —            |
-| DS18B20 (sumergible)       | Temperatura del medio de cultivo | 1-Wire (RMT) |
-| BH1750                     | Intensidad luminosa (lux)        | I²C          |
-| Sensor de turbidez (0–4.5 V) | Turbidez del cultivo (NTU)     | ADC1         |
-| Pantalla OLED 128×64 SH1106 | Interfaz local                  | I²C (0x3C)   |
-| Botón pulsador             | Cambio de pantalla               | GPIO + ISR   |
-| Módulo relé (activo en bajo) | Encendido del calentador       | GPIO         |
-| Tira LED roja + MOSFET     | Iluminación del cultivo          | PWM (LEDC)   |
-
-El diagrama de conexiones está en [`docs/Projecto_bioreactorAlgas.fzz`](docs/Projecto_bioreactorAlgas.fzz) (abrir con [Fritzing](https://fritzing.org/)).
-
-### Asignación de pines
-
-Definida en [`main/main.c`](main/main.c):
-
-| Señal                   | GPIO ESP32-S3          |
-|-------------------------|------------------------|
-| I²C SDA (OLED + BH1750) | 11                     |
-| I²C SCL (OLED + BH1750) | 12                     |
-| Botón de pantalla       | 5 (pull-down, flanco de bajada) |
-| Turbidez (analógico)    | 2 (`ADC1_CHANNEL_1`)   |
-| DS18B20 (1-Wire)        | 6                      |
-| Relé del calentador     | 7                      |
-| Tira LED (PWM)          | 13                     |
-
-> ⚠️ El sensor de turbidez entrega hasta ~4.5 V. Se usa un **divisor de voltaje** (factor 1.51) para no exceder los 3.3 V del ADC del ESP32-S3.
-
-## Estructura del repositorio
+**Turbidity.** The ADC reading (12-bit, 12 dB attenuation) is scaled back to the sensor's real output voltage through the divider factor of 1.51 and converted to NTU with the sensor's characteristic curve:
 
 ```
-.
-├── CMakeLists.txt              # Proyecto ESP-IDF; registra los componentes propios
-├── dependencies.lock           # Versiones fijadas de los componentes externos
-├── sdkconfig                   # Configuración de ESP-IDF (target esp32s3)
-├── main/
-│   ├── main.c                  # Punto de entrada: inicializa todos los módulos
-│   └── idf_component.yml       # Dependencias del IDF Component Manager
-├── componentes/
-│   ├── gestor/                 # Infraestructura compartida
-│   │   ├── gestor_datos.c/.h       # Almacén de datos con mutex
-│   │   ├── I2c_bus_compartido.c/.h # Bus I²C maestro único
-│   │   └── cliente_mqtt.c/.h       # Wi-Fi STA + cliente MQTT
-│   ├── sensores/
-│   │   ├── DS18B20_temp.c/.h       # Temperatura (1-Wire)
-│   │   ├── bh1750_luz.c/.h         # Luz (I²C)
-│   │   └── turbidez.c/.h           # Turbidez (ADC)
-│   └── actuadores/
-│       ├── calentador_relay.c/.h   # Control on/off con histéresis
-│       ├── tira_led_roja.c/.h      # PWM adaptativo
-│       ├── pantalla_oled.c/.h      # Interfaz gráfica + botón
-│       └── u8g2_esp32_hal.c/.h     # HAL de u8g2 sobre el bus I²C compartido
-└── docs/
-    └── Projecto_bioreactorAlgas.fzz  # Esquemático (Fritzing)
+NTU = -1120.4·V² + 5742.3·V − 4353.8     for 2.5 V < V < 4.2 V
 ```
 
-## Descripción de los módulos
+Above 4.2 V the water is taken as clear (0 NTU); below 2.5 V the value saturates at 3000 NTU.
 
-### Gestor de datos (`gestor/gestor_datos`)
-Guarda la última lectura de cada sensor (`ntu`, `lux`, `val_temp`), cada una con su propio **mutex**. Expone una API `set_*()` / `get_*()` para que productores (sensores) y consumidores (actuadores, pantalla, MQTT) nunca toquen las variables directamente.
+**Display.** An SH1106 128×64 OLED driven with u8g2 cycles through three screens: turbidity (with an animated algae and bubbles), light (icon by level plus a bar) and temperature (thermometer plus a 0–40 °C bar). The button on GPIO 5 fires an ISR with a 200 ms debounce that gives a binary semaphore; the display task takes it without blocking and moves to the next screen.
 
-### Bus I²C compartido (`gestor/I2c_bus_compartido`)
-Crea **un solo** `i2c_master_bus` (puerto 0, pull-ups internos) y entrega su *handle* a quien lo pida. Tanto el BH1750 como la HAL de la pantalla agregan su dispositivo a este bus en lugar de crear uno propio, lo que evita conflictos de inicialización.
+**I²C.** The OLED and the BH1750 share one `i2c_master_bus` on port 0, created once in `I2c_bus_compartido.c`. Both drivers add their device to that bus instead of creating their own.
 
-### Temperatura — DS18B20
-Enumera el primer dispositivo del bus 1-Wire (implementado con el periférico **RMT**), dispara la conversión y publica la temperatura cada 300 ms.
+## How to use
 
-### Luz — BH1750
-Modo de medición continua con resolución de 1 lx. Rangos de referencia usados en el proyecto:
-- Bajo: 1 000 – 3 000 lx
-- Medio: 3 000 – 10 000 lx
-- Alto: > 10 000 lx
+### Hardware Required
 
-### Turbidez
-Lee el ADC (12 bits, atenuación 12 dB), reconstruye el voltaje real del sensor y lo convierte a **NTU** con la curva característica del fabricante:
+<p align="center">
+  <img src="docs/IMG_4780.png" width="560" alt="Breadboard with the ESP32-S3 board, OLED showing the temperature screen at 15.75 C, red push button and a step-down converter module">
+</p>
 
-```
-NTU = -1120.4·V² + 5742.3·V − 4353.8     (2.5 V < V < 4.2 V)
-```
+| Part                        | Role                         | Interface    |
+|-----------------------------|------------------------------|--------------|
+| ESP32-S3 board              | Main controller              |              |
+| DS18B20, waterproof probe   | Water temperature            | 1-Wire (RMT) |
+| BH1750                      | Incident light (lux)         | I²C          |
+| Analog turbidity sensor     | Turbidity (NTU), up to ~4.5 V| ADC1         |
+| SH1106 OLED 128×64          | Local display                | I²C (0x3C)   |
+| Push button                 | Change screen                | GPIO + ISR   |
+| Relay module (active-low)   | Switches the heater          | GPIO         |
+| Red LED strip + MOSFET      | Grow light                   | PWM (LEDC)   |
 
-Por encima de 4.2 V se considera agua clara (0 NTU) y por debajo de 2.5 V se satura en 3000 NTU.
+The turbidity sensor outputs up to ~4.5 V, so it goes through a voltage divider (factor 1.51) before reaching the 3.3 V ADC.
 
-### Calentador — relé
-Control **on/off con histéresis** para mantener el cultivo entre ~23.5 °C y 24.5 °C:
-- Enciende si `T ≤ 23.5 °C`.
-- Apaga si `T ≥ 24.5 °C`.
-- Respeta un **intervalo mínimo de 30 s** entre conmutaciones para no desgastar el relé.
-- El relé es **activo en bajo** (`0` = encendido) y arranca apagado.
+Pin assignment, from `main/main.c`:
 
-### Tira LED roja — PWM
-LEDC a 5 kHz y 12 bits. La intensidad compensa la luz ambiental:
+| Signal                  | GPIO                              |
+|-------------------------|-----------------------------------|
+| I²C SDA (OLED + BH1750) | 11                                |
+| I²C SCL (OLED + BH1750) | 12                                |
+| Screen button           | 5 (pull-down, falling edge)       |
+| Turbidity (analog)      | 2 (`ADC1_CHANNEL_1`)              |
+| DS18B20 data            | 6                                 |
+| Heater relay            | 7                                 |
+| LED strip PWM           | 13                                |
 
-| Luz medida        | Duty (de 4095) |
-|-------------------|:--------------:|
-| < 3 000 lx        | 3072 (75 %)    |
-| 3 000 – 12 000 lx | 2048 (50 %)    |
-| 12 000 – 30 000 lx| 1024 (25 %)    |
-| > 30 000 lx       | 100 (~2 %)     |
+The full wiring is in `docs/Projecto_bioreactorAlgas.fzz` (open it with [Fritzing](https://fritzing.org/)).
 
-### Pantalla OLED
-Usa la librería **u8g2** con un controlador SH1106 de 128×64. Tiene tres pantallas, cada una con gráficos XBM:
-1. **Turbidez** — valor en NTU con una animación de algas y burbujas.
-2. **Luz** — icono según el nivel, valor en lux y barra de intensidad.
-3. **Temperatura** — termómetro, valor en °C y barra (escala 0–40 °C).
+<p align="center">
+  <img src="docs/IMG_4779.png" width="560" alt="Two-channel relay module wired to the breadboard under the tank, LED strip glowing red on the right">
+</p>
 
-El botón dispara una **ISR** con antirrebote de 200 ms que libera un **semáforo binario**. La tarea de la pantalla lo consume sin bloquearse y avanza a la siguiente pantalla.
+### Configure the Project
 
-### Cliente MQTT
-Inicializa NVS, se conecta a Wi-Fi en modo estación (reintenta si se cae la conexión) y arranca el cliente MQTT cuando obtiene una IP. Cada 30 s publica las tres lecturas.
-
-## Compilación y flasheo
-
-### Requisitos
-- [ESP-IDF **v5.5**](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/get-started/) (el proyecto se generó con 5.5.3; `bh1750` requiere ≥ 5.3).
-- Placa ESP32-S3.
-
-### Pasos
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/LuisRIchar/proyecto_sistemas_embebidos_bioreactor_micro_algas.git
-cd proyecto_sistemas_embebidos_bioreactor_micro_algas
-
-# 2. Activar el entorno de ESP-IDF
-. $IDF_PATH/export.sh
-
-# 3. Seleccionar el target (ya viene en sdkconfig, pero no estorba)
-idf.py set-target esp32s3
-
-# 4. Compilar — las dependencias externas se descargan solas
-idf.py build
-
-# 5. Flashear y abrir el monitor serie
-idf.py -p <PUERTO> flash monitor
-```
-
-Las dependencias se resuelven automáticamente con el **IDF Component Manager** a partir de `main/idf_component.yml` y `dependencies.lock`, y se descargan en `managed_components/` (carpeta ignorada por git):
-
-| Componente              | Versión | Uso                  |
-|-------------------------|---------|----------------------|
-| `nixy4/u8g2`            | 0.1.4   | Gráficos OLED        |
-| `espressif/bh1750`      | 2.0.0   | Sensor de luz        |
-| `espressif/ds18b20`     | 0.3.0   | Sensor de temperatura|
-| `espressif/onewire_bus` | 1.0.4   | Bus 1-Wire (RMT)     |
-
-## Configuración de red y MQTT
-
-Las credenciales **no** se versionan. Antes de compilar, edita la llamada en [`main/main.c`](main/main.c):
+Wi-Fi and broker settings are passed in `main/main.c` and are not committed. Replace the placeholders before building:
 
 ```c
-Init_cliente_mqtt("SSID", "PASSWORD", "mqtt://<IP_BROKER>:1883");
+Init_cliente_mqtt("SSID", "PASSWORD", "mqtt://<BROKER_IP>:1883");
 ```
 
-> Límites actuales del buffer: SSID ≤ 19 caracteres, contraseña ≤ 19, URI del broker ≤ 39.
+The buffers in `cliente_mqtt.h` hold at most 19 characters for the SSID, 19 for the password and 39 for the broker URI; longer values are silently truncated.
 
-Para pruebas locales sirve cualquier broker, por ejemplo [Mosquitto](https://mosquitto.org/):
+### Build and Flash
 
-```bash
-mosquitto_sub -h <IP_BROKER> -t "bioreactor/sensores" -v
+Built with ESP-IDF v5.5.3 (`dependencies.lock`). The `bh1750` component needs v5.3 or newer.
+
+```sh
+git clone https://github.com/LuisRIchar/proyecto_sistemas_embebidos_bioreactor_micro_algas.git
+cd proyecto_sistemas_embebidos_bioreactor_micro_algas
+. $IDF_PATH/export.sh
+idf.py set-target esp32s3
+idf.py build
+idf.py -p PORT flash monitor
 ```
 
-## Formato de datos MQTT
+External components are fetched by the IDF Component Manager into `managed_components/` on the first build:
 
-| Campo    | Valor                       |
-|----------|-----------------------------|
-| Tópico   | `bioreactor/sensores`       |
-| QoS      | 1                           |
-| Periodo  | 30 s                        |
-| Payload  | `luz,temperatura,turbidez` (CSV) |
+| Component               | Version | Used for        |
+|-------------------------|---------|-----------------|
+| `nixy4/u8g2`            | 0.1.4   | OLED graphics   |
+| `espressif/bh1750`      | 2.0.0   | Light sensor    |
+| `espressif/ds18b20`     | 0.3.0   | Temperature     |
+| `espressif/onewire_bus` | 1.0.4   | 1-Wire over RMT |
 
-Ejemplo:
+## Example Output
+
+Every 30 s the firmware publishes one CSV line to `bioreactor/sensores` with QoS 1:
 
 ```
-5234.17,24.06,12.85
+<lux>,<temperature_c>,<turbidity_ntu>
 ```
 
-## Trabajo futuro
+To watch it from any machine on the network:
 
-- Mover las credenciales a `menuconfig` (`Kconfig.projbuild`) para no editar el código fuente.
-- Publicar en formato JSON y usar TLS (`mqtts://`).
-- Migrar el sensor de turbidez del driver ADC heredado (`driver/adc.h`) a `esp_adc/adc_oneshot.h`, con calibración.
-- Hacer configurables los umbrales de temperatura e iluminación (por MQTT o NVS).
-- Agregar control de pH, CO₂ y fotoperiodo programado.
-- Unificar en minúsculas los nombres de `I2c_bus_compartido.*` y `DS18B20_temp.*` para que compile en sistemas de archivos sensibles a mayúsculas (Linux/CI).
+```sh
+mosquitto_sub -h <BROKER_IP> -t "bioreactor/sensores" -v
+```
 
-## Autores
+The photo below is a separate web dashboard (not part of this repo) subscribed to that topic, showing 19.17 lx, 15.75 °C and 0.00 NTU from the tank.
 
-- **Luis Ricardo Serrano Dzib**
-- **Aram Gonzales Ronquillo**
+<p align="center">
+  <img src="docs/IMG_4776.png" width="560" alt="Laptop showing the Biorreactor Microalgas web dashboard with Iluminación 19.17 lux, Temperatura 15.75 C and Turbidez 0.00 NTU">
+</p>
 
-Facultad de Ingeniería — Universidad Autónoma del Estado de México (UAEMex).
+## Troubleshooting
 
-## Licencia
+The project was developed on case-insensitive file systems. `componentes/gestor/CMakeLists.txt` lists `i2c_bus_compartido.c` while the file is `I2c_bus_compartido.c`, and the sources include `ds18b20_temp.h` while the file is `DS18B20_temp.h`. On Linux the build fails until the file names and references match.
 
-Distribuido bajo la licencia **Apache 2.0**. Consulta [`LICENSE`](LICENSE).
+The turbidity code uses the legacy `driver/adc.h` API, which ESP-IDF 5.x still compiles but marks as deprecated, so expect warnings.
+
+## Author
+
+Luis Ricardo Serrano Dzib, Facultad de Ingeniería, Universidad Autónoma del Estado de México (UAEMex).
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
