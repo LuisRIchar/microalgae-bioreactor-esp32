@@ -64,7 +64,6 @@ void set_temp(float temperatura_sensor){
 }
 
 
-
 void Init_gestor_datos(void){
 
     turbidez.turbidez_mutex = xSemaphoreCreateMutex();
